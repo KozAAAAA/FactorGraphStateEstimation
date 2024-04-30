@@ -5,5 +5,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(GTSAM REQUIRED)
 
-add_executable(${PROJECT_NAME} src/main.cpp)
-target_link_libraries(${PROJECT_NAME} gtsam::gtsam)
+add_executable(odometry_example src/odometry_example.cpp)
+target_link_libraries(odometry_example gtsam::gtsam)
+
+add_executable(localization_example src/localization_example.cpp)
+target_link_libraries(localization_example gtsam::gtsam)
+
+add_executable(sensor_fusion src/sensor_fusion.cpp)
+target_link_libraries(sensor_fusion gtsam::gtsam)

@@ -9,6 +9,11 @@ using namespace gtsam;
 
 /*
 ---------------------------------------------------------
+This example demonstrates how to create a simple factor graph with binary factors.
+Binary factors can be interpreted as odometry measurements, for example.
+Error of this measurement depends on two variables in the graph.
+Therefore error accumulates over time.
+
 f1      f2      f3
 *---O---*---O---*---O
     x1      x2      x3
