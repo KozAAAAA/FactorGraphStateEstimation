@@ -24,41 +24,57 @@ Values can be interpreted as meters and radians
 */
 
 class UnaryFactor : public NoiseModelFactor1<Pose2> {
-  double mx_, my_;  ///< X and Y measurements
+ private:
+  double measuredX_, measuredY_;  ///< X and Y measurements
 
  public:
-  UnaryFactor(Key j, double x, double y, const SharedNoiseModel& model) : NoiseModelFactor1<Pose2>(model, j), mx_(x), my_(y) {}
+  UnaryFactor(Key key, double x, double y, const SharedNoiseModel& model) : NoiseModelFactor1<Pose2>(model, key), measuredX_(x), measuredY_(y) {}
 
-  Vector evaluateError(const Pose2& q, boost::optional<Matrix&> H = boost::none) const {
-    const Rot2& R = q.rotation();
-    if (H) {
-      (*H) = (gtsam::Matrix(2, 3) << R.c(), -R.s(), 0.0, R.s(), R.c(), 0.0).finished();
-    }
-    return (Vector(2) << q.x() - mx_, q.y() - my_).finished();
+  // clang-format off
+  // return cost function
+  Vector evaluateError(const Pose2& estimatedPose, boost::optional<Matrix&> H = boost::none) const {
+    const Rot2& R = estimatedPose.rotation();
+    
+    if (H) (*H) = (gtsam::Matrix(2, 3) << R.c(), -R.s(), 0.0, 
+                                     R.s(),  R.c(), 0.0).finished();
+    
+    return (Vector(2) << estimatedPose.x() - measuredX_, 
+                         estimatedPose.y() - measuredY_).finished();
   }
+  // clang-format on
 };
 
 int main() {
-  const noiseModel::Diagonal::shared_ptr unaryNoise = noiseModel::Diagonal::Sigmas(Vector2(0.1, 0.1));  // 10cm std on x,y
+  const noiseModel::Diagonal::shared_ptr unaryNoise = noiseModel::Diagonal::Sigmas(Vector2(0.1, 0.1));          // 10cm std on x,y
   const noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Sigmas(Vector3(0.2, 0.2, 0.1));  // uncertainty of the odometry measurement
   
+  float gps_x = 0.0;
+
+  float y = 0.0;
+  float theta = 0.0;
+
+  float x_move[] = {1.0, 2.0, 1.0, 3.0, 1.0};
+  
   NonlinearFactorGraph graph;
-
-  graph.add(boost::make_shared<UnaryFactor>(1, 0.0, 0.0, unaryNoise));
-  graph.add(BetweenFactor<Pose2>(1, 2, Pose2(2.0, 0.0, 0.0), odometryNoise));
-  graph.add(boost::make_shared<UnaryFactor>(2, 2.0, 0.0, unaryNoise));
-  graph.add(BetweenFactor<Pose2>(2, 3, Pose2(2.0, 0.0, 0.0), odometryNoise));
-  graph.add(boost::make_shared<UnaryFactor>(3, 4.0, 0.0, unaryNoise));
-
-  graph.print("Factor Graph:\n");
-
   Values initial;
-  initial.insert(1, Pose2(0.5, 0.0, 0.2));
-  initial.insert(2, Pose2(2.3, 0.1, -0.2));
-  initial.insert(3, Pose2(4.1, 0.1, 0.1));
-  initial.print("Initial:\n");
+  
 
-  Values result = LevenbergMarquardtOptimizer(graph, initial).optimize();
-  result.print("Final result:\n");
+  for (int i = 0; i < sizeof(x_move)/sizeof(x_move[0]); i++) {
+    float current_x_move = x_move[i];
+    std::cout << "Current x move: " << current_x_move << std::endl;
+    int key = i + 1;
+
+    graph.add(boost::make_shared<UnaryFactor>(key, gps_x, y, unaryNoise));
+    initial.insert(key, Pose2(gps_x, y, theta));
+    
+    Values result = LevenbergMarquardtOptimizer(graph, initial).optimize();
+    Pose2 optimized_pose = result.at<Pose2>(key);
+    initial.update(key, optimized_pose);
+    optimized_pose.print("Optimized pose: ");
+
+    gps_x += current_x_move; // fake gps measurement
+    float odometry_x = current_x_move; // fake odometry measurement
+    
+    graph.add(BetweenFactor<Pose2>(key, key+1, Pose2(odometry_x, y, theta), odometryNoise));
+  }
 }
-
