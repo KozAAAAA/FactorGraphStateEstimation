@@ -5,17 +5,20 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 
+#include <tuple>
+
 using namespace gtsam;
 
 /*
 ---------------------------------------------------------
 
-
-    fg1     fg2     fg3
+   gnss    gnss    gnss
     *       *       *
-    |  fo1  |  fo2  |
+    |  odom |  odom |
     O---*---O---*---O
-    x1      x2      x3
+    |       |       |
+    |---*---|---*---|
+       imu     imu
 
 ---------------------------------------------------------
 Pose2 is a 2D pose (x, y, theta)
@@ -25,7 +28,7 @@ Values can be interpreted as meters and radians
 
 class UnaryFactor : public NoiseModelFactor1<Pose2> {
  private:
-  double measuredX_, measuredY_;  ///< X and Y measurements
+  double measuredX_, measuredY_;
 
  public:
   UnaryFactor(Key key, double x, double y, const SharedNoiseModel& model) : NoiseModelFactor1<Pose2>(model, key), measuredX_(x), measuredY_(y) {}
@@ -44,37 +47,59 @@ class UnaryFactor : public NoiseModelFactor1<Pose2> {
   // clang-format on
 };
 
+// -------------------------- USED FOR MOCKING DATA ---------------------------
+static constexpr int N_KEYS = 5;
+
+std::tuple<float, float> getGnss() {
+  static int i = -1;
+  static std::array<float, N_KEYS> x = {0.0, 1.0, 3.0, 4.0, 7.0};
+  static std::array<float, N_KEYS> y = {0.0, 1.0, 3.0, 4.0, 7.0};
+  i++;
+  return std::make_tuple(x[i], y[i]);
+}
+
+std::tuple<float, float, float> getOdometry() {
+  static int i = -1;
+  static std::array<float, N_KEYS> x = {1.0, 2.0, 1.0, 3.0, 1.0};
+  static std::array<float, N_KEYS> y = {1.0, 2.0, 1.0, 3.0, 1.0};
+  static std::array<float, N_KEYS> theta = {0.0, 0.0, 0.0, 0.0, 0.0};
+  i++;
+  return std::make_tuple(x[i], y[i], theta[i]);
+}
+
+std::tuple<float, float, float> getImu() {
+  static int i = -1;
+  static std::array<float, N_KEYS> x = {1.0, 2.0, 1.0, 3.0, 1.0};
+  static std::array<float, N_KEYS> y = {1.0, 2.0, 1.0, 3.0, 1.0};
+  static std::array<float, N_KEYS> theta = {0.0, 0.0, 0.0, 0.0, 0.0};
+  i++;
+  return std::make_tuple(x[i], y[i], theta[i]);
+}
+// ----------------------------------------------------------------------------
+
 int main() {
-  const noiseModel::Diagonal::shared_ptr unaryNoise = noiseModel::Diagonal::Sigmas(Vector2(0.1, 0.1));          // 10cm std on x,y
-  const noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Sigmas(Vector3(0.2, 0.2, 0.1));  // uncertainty of the odometry measurement
-  
-  float gps_x = 0.0;
+  const noiseModel::Diagonal::shared_ptr gnssNoise = noiseModel::Diagonal::Sigmas(Vector2(0.1, 0.1));
+  const noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Sigmas(Vector3(0.2, 0.2, 0.1));
+  const noiseModel::Diagonal::shared_ptr imuNoise = noiseModel::Diagonal::Sigmas(Vector3(0.3, 0.3, 0.3));
 
-  float y = 0.0;
-  float theta = 0.0;
-
-  float x_move[] = {1.0, 2.0, 1.0, 3.0, 1.0};
-  
   NonlinearFactorGraph graph;
   Values initial;
-  
 
-  for (int i = 0; i < sizeof(x_move)/sizeof(x_move[0]); i++) {
-    float current_x_move = x_move[i];
-    std::cout << "Current x move: " << current_x_move << std::endl;
-    int key = i + 1;
+  for (int key = 1; key < N_KEYS + 1; key++) {
+    auto [gnssX, gnssY] = getGnss();                 // fake gnss data
+    auto [odomX, odomY, odomTheta] = getOdometry();  // fake odometry data
+    auto [imuX, imuY, imuTheta] = getImu();          // fake imu data
 
-    graph.add(boost::make_shared<UnaryFactor>(key, gps_x, y, unaryNoise));
-    initial.insert(key, Pose2(gps_x, y, theta));
-    
+    graph.add(boost::make_shared<UnaryFactor>(key, gnssX, gnssY, gnssNoise)); // What about theta ???
+    initial.insert(key, Pose2(gnssX, gnssY, 0.0));  // WHY IS IT THERE??? How to handle theta ???
+
     Values result = LevenbergMarquardtOptimizer(graph, initial).optimize();
-    Pose2 optimized_pose = result.at<Pose2>(key);
-    initial.update(key, optimized_pose);
-    optimized_pose.print("Optimized pose: ");
+    Pose2 optimPose = result.at<Pose2>(key);
+    initial.update(key, optimPose);
 
-    gps_x += current_x_move; // fake gps measurement
-    float odometry_x = current_x_move; // fake odometry measurement
-    
-    graph.add(BetweenFactor<Pose2>(key, key+1, Pose2(odometry_x, y, theta), odometryNoise));
+    graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(odomX, odomY, odomTheta), odometryNoise));
+    graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(imuX, imuY, imuTheta), imuNoise));
+
+    optimPose.print("Optimized Pose: ");
   }
 }
