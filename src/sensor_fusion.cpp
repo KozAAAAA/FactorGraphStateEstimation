@@ -77,6 +77,7 @@ std::tuple<float, float, float> getImu() {
 }
 // ----------------------------------------------------------------------------
 
+// TODO: Theta doesn't work
 int main() {
   const noiseModel::Diagonal::shared_ptr gnssNoise = noiseModel::Diagonal::Sigmas(Vector2(0.1, 0.1));
   const noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Sigmas(Vector3(0.2, 0.2, 0.1));
@@ -90,16 +91,15 @@ int main() {
     auto [odomX, odomY, odomTheta] = getOdometry();  // fake odometry data
     auto [imuX, imuY, imuTheta] = getImu();          // fake imu data
 
-    graph.add(boost::make_shared<UnaryFactor>(key, gnssX, gnssY, gnssNoise)); // What about theta ???
+    graph.add(UnaryFactor(key, gnssX, gnssY, gnssNoise)); // What about theta ???
     initial.insert(key, Pose2(gnssX, gnssY, 0.0));  // WHY IS IT THERE??? How to handle theta ???
 
-    Values result = LevenbergMarquardtOptimizer(graph, initial).optimize();
-    Pose2 optimPose = result.at<Pose2>(key);
-    initial.update(key, optimPose);
+    auto optimPose = LevenbergMarquardtOptimizer(graph, initial).optimize().at<Pose2>(key);
 
+    initial.update(key, optimPose);
     graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(odomX, odomY, odomTheta), odometryNoise));
     graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(imuX, imuY, imuTheta), imuNoise));
 
-    optimPose.print("Optimized Pose: ");
+    optimPose.print("Optimized pose at key " + std::to_string(key) + ": ");
   }
 }
