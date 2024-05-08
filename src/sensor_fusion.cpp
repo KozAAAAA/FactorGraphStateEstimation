@@ -28,77 +28,86 @@ Values can be interpreted as meters and radians
 
 class UnaryFactor : public NoiseModelFactor1<Pose2> {
  private:
-  double measuredX_, measuredY_;
+  double measuredX_, measuredY_, measuredTheta_;
 
  public:
-  UnaryFactor(Key key, double x, double y, const SharedNoiseModel& model) : NoiseModelFactor1<Pose2>(model, key), measuredX_(x), measuredY_(y) {}
+  UnaryFactor(Key key, double x, double y, double theta, const SharedNoiseModel& model)
+      : NoiseModelFactor1<Pose2>(model, key), measuredX_(x), measuredY_(y), measuredTheta_(theta) {}
 
-  // clang-format off
-  // return cost function
   Vector evaluateError(const Pose2& estimatedPose, boost::optional<Matrix&> H = boost::none) const {
     const Rot2& R = estimatedPose.rotation();
-    
-    if (H) (*H) = (gtsam::Matrix(2, 3) << R.c(), -R.s(), 0.0, 
-                                     R.s(),  R.c(), 0.0).finished();
-    
-    return (Vector(2) << estimatedPose.x() - measuredX_, 
-                         estimatedPose.y() - measuredY_).finished();
+
+    // clang-format off
+    // Jacobian
+    if (H) (*H) = (gtsam::Matrix(3, 3) << 
+                  1.0, 0.0, 0.0,
+                  0.0, 1.0, 0.0,
+                  0.0, 0.0, 1.0
+                  ).finished();
+                  
+    // cost function
+    return (Vector(3) << 
+                  estimatedPose.x() - measuredX_, 
+                  estimatedPose.y() - measuredY_,
+                  estimatedPose.theta() - measuredTheta_
+                  ).finished();
+    // clang-format on
   }
-  // clang-format on
 };
 
 // -------------------------- USED FOR MOCKING DATA ---------------------------
 static constexpr int N_KEYS = 5;
 
-std::tuple<float, float> getGnss() {
+std::tuple<float, float, float> getGlobal() {
   static int i = -1;
-  static std::array<float, N_KEYS> x = {0.0, 1.0, 3.0, 4.0, 7.0};
-  static std::array<float, N_KEYS> y = {0.0, 1.0, 3.0, 4.0, 7.0};
-  i++;
-  return std::make_tuple(x[i], y[i]);
-}
-
-std::tuple<float, float, float> getOdometry() {
-  static int i = -1;
-  static std::array<float, N_KEYS> x = {1.0, 2.0, 1.0, 3.0, 1.0};
-  static std::array<float, N_KEYS> y = {1.0, 2.0, 1.0, 3.0, 1.0};
+  static std::array<float, N_KEYS> x = {0.0, 1.0, 2.0, 3.0, 4.0};
+  static std::array<float, N_KEYS> y = {0.0, 1.0, 2.0, 3.0, 4.0};
   static std::array<float, N_KEYS> theta = {0.0, 0.0, 0.0, 0.0, 0.0};
   i++;
   return std::make_tuple(x[i], y[i], theta[i]);
 }
 
-std::tuple<float, float, float> getImu() {
+std::tuple<float, float, float> getRelative1() {
   static int i = -1;
-  static std::array<float, N_KEYS> x = {1.0, 2.0, 1.0, 3.0, 1.0};
-  static std::array<float, N_KEYS> y = {1.0, 2.0, 1.0, 3.0, 1.0};
+  static std::array<float, N_KEYS> x = {1.0, 1.0, 1.0, 1.0, 1.0};
+  static std::array<float, N_KEYS> y = {1.0, 1.0, 1.0, 1.0, 1.0};
   static std::array<float, N_KEYS> theta = {0.0, 0.0, 0.0, 0.0, 0.0};
   i++;
   return std::make_tuple(x[i], y[i], theta[i]);
 }
+
+std::tuple<float, float, float> getRelative2() {
+  static int i = -1;
+  static std::array<float, N_KEYS> x = {1.0, 1.0, 1.0, 1.0, 1.0};
+  static std::array<float, N_KEYS> y = {1.0, 1.0, 1.0, 1.0, 1.0};
+  static std::array<float, N_KEYS> theta = {0.0, 0.0, 0.0, 0.0, 0.0};
+  i++;
+  return std::make_tuple(x[i], y[i], theta[i]);
+}
+
 // ----------------------------------------------------------------------------
 
-// TODO: Theta doesn't work
+// TODO: Theta doesn't work - optimPose gets worse with each iteration (but only if theta changes)
 int main() {
-  const noiseModel::Diagonal::shared_ptr gnssNoise = noiseModel::Diagonal::Sigmas(Vector2(0.1, 0.1));
-  const noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Sigmas(Vector3(0.2, 0.2, 0.1));
-  const noiseModel::Diagonal::shared_ptr imuNoise = noiseModel::Diagonal::Sigmas(Vector3(0.3, 0.3, 0.3));
+  const noiseModel::Diagonal::shared_ptr globalNoise = noiseModel::Diagonal::Sigmas(Vector3(0.1, 0.1, 0.02));
+  const noiseModel::Diagonal::shared_ptr relativeNoise = noiseModel::Diagonal::Sigmas(Vector3(0.1, 0.1, 0.02));
 
   NonlinearFactorGraph graph;
   Values initial;
 
   for (int key = 1; key < N_KEYS + 1; key++) {
-    auto [gnssX, gnssY] = getGnss();                 // fake gnss data
-    auto [odomX, odomY, odomTheta] = getOdometry();  // fake odometry data
-    auto [imuX, imuY, imuTheta] = getImu();          // fake imu data
+    auto [globalX, globalY, globalTheta] = getGlobal();               // mock global measurements
+    auto [relativeX1, relativeY1, reltaiveTheta1] = getRelative1();   // mock relative measurements
+    auto [relativeX2, relativeY2, reltaiveTheta2] = getRelative2();   // mock relative measurements
 
-    graph.add(UnaryFactor(key, gnssX, gnssY, gnssNoise)); // What about theta ???
-    initial.insert(key, Pose2(gnssX, gnssY, 0.0));  // WHY IS IT THERE??? How to handle theta ???
+    graph.add(boost::make_shared<UnaryFactor>(key, globalX, globalY, globalTheta, globalNoise));
+    initial.insert(key, Pose2(globalX, globalY, globalTheta));
 
     auto optimPose = LevenbergMarquardtOptimizer(graph, initial).optimize().at<Pose2>(key);
 
     initial.update(key, optimPose);
-    graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(odomX, odomY, odomTheta), odometryNoise));
-    graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(imuX, imuY, imuTheta), imuNoise));
+    graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(relativeX1, relativeY1, reltaiveTheta1), relativeNoise));
+    graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(relativeX2, relativeY2, reltaiveTheta2), relativeNoise));
 
     optimPose.print("Optimized pose at key " + std::to_string(key) + ": ");
   }
