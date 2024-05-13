@@ -5,110 +5,121 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 
+#include <chrono>
 #include <tuple>
 
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
+
 using namespace gtsam;
+using namespace geometry_msgs;
+using namespace std::placeholders;
+using namespace std::chrono_literals;
 
-/*
----------------------------------------------------------
-
-   gnss    gnss    gnss
-    *       *       *
-    |  odom |  odom |
-    O---*---O---*---O
-    |       |       |
-    |---*---|---*---|
-       imu     imu
-
----------------------------------------------------------
-Pose2 is a 2D pose (x, y, theta)
-Values can be interpreted as meters and radians
-
-*/
-
-class UnaryFactor : public NoiseModelFactor1<Pose2> {
- private:
-  double measuredX_, measuredY_, measuredTheta_;
-
+class SensorFusion : public rclcpp::Node {
  public:
-  UnaryFactor(Key key, double x, double y, double theta, const SharedNoiseModel& model)
-      : NoiseModelFactor1<Pose2>(model, key), measuredX_(x), measuredY_(y), measuredTheta_(theta) {}
+  SensorFusion();
 
-  Vector evaluateError(const Pose2& estimatedPose, boost::optional<Matrix&> H = boost::none) const {
-    const Rot2& R = estimatedPose.rotation();
+ private:
+  void optim_pose_callback();
+  void relative_pose_callback_1(const msg::PoseWithCovarianceStamped::SharedPtr msg);
+  void relative_pose_callback_2(const msg::PoseWithCovarianceStamped::SharedPtr msg);
+  void absolute_pose_callback(const msg::PoseWithCovarianceStamped::SharedPtr msg);
+  std::tuple<double, double, double> get_variance(const msg::PoseWithCovarianceStamped::SharedPtr msg);
 
-    // clang-format off
-    // Jacobian
-    if (H) (*H) = (gtsam::Matrix(3, 3) << 
-                  1.0, 0.0, 0.0,
-                  0.0, 1.0, 0.0,
-                  0.0, 0.0, 1.0
-                  ).finished();
-                  
-    // cost function
-    return (Vector(3) << 
-                  estimatedPose.x() - measuredX_, 
-                  estimatedPose.y() - measuredY_,
-                  estimatedPose.theta() - measuredTheta_
-                  ).finished();
-    // clang-format on
-  }
-};
+  rclcpp::TimerBase::SharedPtr optim_pose_timer;
+  rclcpp::Publisher<msg::PoseWithCovarianceStamped>::SharedPtr optim_pose_publisher;
+  rclcpp::Subscription<msg::PoseWithCovarianceStamped>::SharedPtr relative_pose_subscriber_1;
+  rclcpp::Subscription<msg::PoseWithCovarianceStamped>::SharedPtr relative_pose_subscriber_2;
+  rclcpp::Subscription<msg::PoseWithCovarianceStamped>::SharedPtr absolute_pose_subscriber;
 
-// -------------------------- USED FOR MOCKING DATA ---------------------------
-static constexpr int N_KEYS = 5;
+  constexpr static std::chrono::milliseconds OPTIM_POSE_RATE = 1s;
 
-std::tuple<float, float, float> getGlobal() {
-  static int i = -1;
-  static std::array<float, N_KEYS> x = {0.0, 1.0, 2.0, 3.0, 4.0};
-  static std::array<float, N_KEYS> y = {0.0, 1.0, 2.0, 3.0, 4.0};
-  static std::array<float, N_KEYS> theta = {0.0, 0.0, 0.0, 0.0, 0.0};
-  i++;
-  return std::make_tuple(x[i], y[i], theta[i]);
-}
-
-std::tuple<float, float, float> getRelative1() {
-  static int i = -1;
-  static std::array<float, N_KEYS> x = {1.0, 1.0, 1.0, 1.0, 1.0};
-  static std::array<float, N_KEYS> y = {1.0, 1.0, 1.0, 1.0, 1.0};
-  static std::array<float, N_KEYS> theta = {0.0, 0.0, 0.0, 0.0, 0.0};
-  i++;
-  return std::make_tuple(x[i], y[i], theta[i]);
-}
-
-std::tuple<float, float, float> getRelative2() {
-  static int i = -1;
-  static std::array<float, N_KEYS> x = {1.0, 1.0, 1.0, 1.0, 1.0};
-  static std::array<float, N_KEYS> y = {1.0, 1.0, 1.0, 1.0, 1.0};
-  static std::array<float, N_KEYS> theta = {0.0, 0.0, 0.0, 0.0, 0.0};
-  i++;
-  return std::make_tuple(x[i], y[i], theta[i]);
-}
-
-// ----------------------------------------------------------------------------
-
-// TODO: Theta doesn't work - optimPose gets worse with each iteration (but only if theta changes)
-int main() {
-  const noiseModel::Diagonal::shared_ptr globalNoise = noiseModel::Diagonal::Sigmas(Vector3(0.1, 0.1, 0.02));
-  const noiseModel::Diagonal::shared_ptr relativeNoise = noiseModel::Diagonal::Sigmas(Vector3(0.1, 0.1, 0.02));
+  unsigned int key = 1;
 
   NonlinearFactorGraph graph;
   Values initial;
 
-  for (int key = 1; key < N_KEYS + 1; key++) {
-    auto [globalX, globalY, globalTheta] = getGlobal();               // mock global measurements
-    auto [relativeX1, relativeY1, reltaiveTheta1] = getRelative1();   // mock relative measurements
-    auto [relativeX2, relativeY2, reltaiveTheta2] = getRelative2();   // mock relative measurements
+  Pose2 relative_pose_1;
+  noiseModel::Diagonal::shared_ptr relative_noise_1;
+  bool new_relative_pose_1 = false;
 
-    graph.add(boost::make_shared<UnaryFactor>(key, globalX, globalY, globalTheta, globalNoise));
-    initial.insert(key, Pose2(globalX, globalY, globalTheta));
+  Pose2 relative_pose_2;
+  noiseModel::Diagonal::shared_ptr relative_noise_2;
+  bool new_relative_pose_2 = false;
 
-    auto optimPose = LevenbergMarquardtOptimizer(graph, initial).optimize().at<Pose2>(key);
+  Pose2 absolute_pose;
+  noiseModel::Diagonal::shared_ptr absolute_noise;
+  bool new_absolute_pose = false;
+};
 
-    initial.update(key, optimPose);
-    graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(relativeX1, relativeY1, reltaiveTheta1), relativeNoise));
-    graph.add(BetweenFactor<Pose2>(key, key + 1, Pose2(relativeX2, relativeY2, reltaiveTheta2), relativeNoise));
+SensorFusion::SensorFusion() : Node("sensor_fusion") {
+  optim_pose_timer = this->create_wall_timer(OPTIM_POSE_RATE, std::bind(&SensorFusion::optim_pose_callback, this));
 
-    optimPose.print("Optimized pose at key " + std::to_string(key) + ": ");
-  }
+  optim_pose_publisher = this->create_publisher<msg::PoseWithCovarianceStamped>("optim_pose", 1);
+
+  relative_pose_subscriber_1 =
+      this->create_subscription<msg::PoseWithCovarianceStamped>("relative_pose_1", 1, std::bind(&SensorFusion::relative_pose_callback_1, this, _1));
+  relative_pose_subscriber_2 =
+      this->create_subscription<msg::PoseWithCovarianceStamped>("relative_pose_2", 1, std::bind(&SensorFusion::relative_pose_callback_2, this, _1));
+  absolute_pose_subscriber =
+      this->create_subscription<msg::PoseWithCovarianceStamped>("absolute_pose", 1, std::bind(&SensorFusion::absolute_pose_callback, this, std::placeholders::_1));
 }
+
+void SensorFusion::optim_pose_callback() {
+  if (new_relative_pose_1 && new_relative_pose_2 && new_absolute_pose) {
+    new_relative_pose_1 = false;
+    new_relative_pose_2 = false;
+    new_absolute_pose = false;
+
+    // TODO: OPTIMIZATION HERE
+    // TODO: Krzysztof, please implement the optimization here based on the MAIN branch
+    (void)relative_pose_1; // ODOMETRY LIKE DATA
+    (void)relative_noise_1; // ODOMETRY LIKE DATA
+    (void)absolute_pose; // GNSS LIKE DATA
+
+    }
+  }
+
+  void SensorFusion::relative_pose_callback_1(const msg::PoseWithCovarianceStamped::SharedPtr msg) {
+    RCLCPP_INFO(this->get_logger(), "Received relative pose 1");
+
+    auto [var_x, var_y, var_theta] = get_variance(msg);
+    relative_noise_1 = noiseModel::Diagonal::Sigmas(Vector3(var_x, var_y, var_theta));
+    relative_pose_1 = Pose2(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.orientation.z);
+    new_relative_pose_1 = true;
+  }
+
+  void SensorFusion::relative_pose_callback_2(const msg::PoseWithCovarianceStamped::SharedPtr msg) {
+    RCLCPP_INFO(this->get_logger(), "Received relative pose 2");
+
+    auto [var_x, var_y, var_theta] = get_variance(msg);
+    relative_noise_2 = noiseModel::Diagonal::Sigmas(Vector3(var_x, var_y, var_theta));
+    relative_pose_2 = Pose2(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.orientation.z);
+    new_relative_pose_2 = true;
+  }
+
+  void SensorFusion::absolute_pose_callback(const msg::PoseWithCovarianceStamped::SharedPtr msg) {
+    RCLCPP_INFO(this->get_logger(), "Received absolute pose");
+
+    auto [var_x, var_y, var_theta] = get_variance(msg);
+    absolute_noise = noiseModel::Diagonal::Sigmas(Vector3(var_x, var_y, var_theta));
+    absolute_pose = Pose2(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.orientation.z);
+    new_absolute_pose = true;
+  }
+
+  std::tuple<double, double, double> SensorFusion::get_variance(const msg::PoseWithCovarianceStamped::SharedPtr msg) {
+    // Extract from the diagonal of the covariance matrix
+    double cov_x = msg->pose.covariance[0];
+    double cov_y = msg->pose.covariance[7];
+    double cov_theta = msg->pose.covariance[35];
+    return std::make_tuple(cov_x, cov_y, cov_theta);
+  }
+
+  int main(int argc, char* argv[]) {
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<SensorFusion>());
+    rclcpp::shutdown();
+    return 0;
+  }
